@@ -1,12 +1,9 @@
 import datetime as dt
 import asyncio
-import asyncio
 import json
 import os
 import re
 import threading
-import datetime as dt
-import datetime as dt
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
@@ -20,9 +17,13 @@ try:
 except Exception:
     edge_tts = None
 try:
-    import edge_tts
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfgen import canvas
 except Exception:
-    edge_tts = None
+    letter = None
+    pdfmetrics = None
+    canvas = None
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_QUERY = "cat:physics.optics"
@@ -32,8 +33,8 @@ OLLAMA_API_URL = "http://localhost:11434/api/generate"
 DEFAULT_PAPER_DOWNLOAD_DIR = r"C:\Users\Amin\OneDrive\Documents\Papers"
 ONE_PAGER_DIR_NAME = "OnePagers"
 AUDIO_DIR_NAME = "Audio"
-AUDIO_DIR_NAME = "Audio"
 TRANSCRIPTS_DIR_NAME = "Transcripts"
+REPORTS_DIR_NAME = "Reports"
 LEGACY_APP_STATE_PATH = os.path.join(
     os.path.expanduser("~"),
     "AppData",
@@ -264,14 +265,6 @@ class ArxivOpticsUI:
             style="Mac.TButton",
         )
         one_pager_btn.pack(side="right", padx=button_padx)
-
-        podcast_btn = ttk.Button(
-            actions_row,
-            text="Podcast",
-            command=self.create_podcast_for_selection,
-            style="Mac.TButton",
-        )
-        podcast_btn.pack(side="right", padx=button_padx)
 
         podcast_btn = ttk.Button(
             actions_row,
@@ -1290,7 +1283,7 @@ class ArxivOpticsUI:
         if not ctx:
             return
 
-        sections = []
+        paper_blocks = []
         total = len(jobs)
         for idx, job in enumerate(jobs, start=1):
             title = job["title"]
@@ -1322,17 +1315,15 @@ class ArxivOpticsUI:
                 except Exception as exc:
                     one_pager = f"One-pager generation failed: {exc}"
 
-            sections.append(
-                "\n".join(
-                    [
-                        f"Title: {title}",
-                        f"Abstract: {abstract}",
-                        f"One Pager: {one_pager}",
-                    ]
-                )
+            paper_blocks.append(
+                {
+                    "title": title,
+                    "abstract": abstract,
+                    "one_pager": one_pager,
+                }
             )
 
-        full_text = "\n\n".join(sections).strip()
+        full_text = self._build_podcast_transcript_text(paper_blocks).strip()
         if not full_text:
             self.root.after(
                 0, lambda: messagebox.showerror("Podcast failed", "No text was available to synthesize.")
@@ -1341,11 +1332,15 @@ class ArxivOpticsUI:
 
         out_path = self._podcast_audio_path(len(jobs))
         transcript_path = self._podcast_transcript_path(out_path)
+        report_path = self._podcast_report_pdf_path(out_path)
         try:
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             os.makedirs(os.path.dirname(transcript_path), exist_ok=True)
             with open(transcript_path, "w", encoding="utf-8") as f:
                 f.write(full_text)
+            if canvas and letter and pdfmetrics:
+                os.makedirs(os.path.dirname(report_path), exist_ok=True)
+                self._save_podcast_report_pdf(paper_blocks, report_path)
             voice = os.getenv("EDGE_TTS_VOICE", "en-US-AriaNeural").strip() or "en-US-AriaNeural"
             rate = os.getenv("EDGE_TTS_RATE", "+0%").strip() or "+0%"
             self._save_audio_with_edge_tts(full_text, out_path, voice=voice, rate=rate)
@@ -1353,12 +1348,29 @@ class ArxivOpticsUI:
             self.root.after(0, lambda: self._on_podcast_error(tab_id, exc))
             return
 
-        self.root.after(0, lambda: self._on_podcast_ready(tab_id, out_path, total))
+        self.root.after(
+            0,
+            lambda: self._on_podcast_ready(
+                tab_id,
+                out_path,
+                total,
+                report_path if (canvas and letter and pdfmetrics) else "",
+            ),
+        )
 
-    def _on_podcast_ready(self, tab_id, out_path, count):
+    def _on_podcast_ready(self, tab_id, out_path, count, report_path=""):
         ctx = self.tabs.get(tab_id)
         if ctx:
-            self._set_context_status(ctx, f"Podcast saved for {count} papers: {os.path.basename(out_path)}")
+            if report_path:
+                self._set_context_status(
+                    ctx,
+                    f"Podcast saved ({count} papers): {os.path.basename(out_path)} | Report: {os.path.basename(report_path)}",
+                )
+            else:
+                self._set_context_status(
+                    ctx,
+                    f"Podcast saved ({count} papers): {os.path.basename(out_path)}. Install reportlab for PDF reports.",
+                )
         try:
             os.startfile(out_path)
         except OSError:
@@ -1582,6 +1594,118 @@ class ArxivOpticsUI:
         transcript_dir = os.path.join(audio_dir, TRANSCRIPTS_DIR_NAME)
         stem = os.path.splitext(os.path.basename(podcast_audio_path))[0]
         return os.path.join(transcript_dir, f"{stem}.txt")
+
+    def _podcast_report_pdf_path(self, podcast_audio_path):
+        audio_dir = os.path.dirname(podcast_audio_path)
+        reports_dir = os.path.join(audio_dir, REPORTS_DIR_NAME)
+        stem = os.path.splitext(os.path.basename(podcast_audio_path))[0]
+        return os.path.join(reports_dir, f"{stem}.pdf")
+
+    def _build_podcast_transcript_text(self, paper_blocks):
+        chunks = []
+        separator = "=" * 96
+        for idx, block in enumerate(paper_blocks, start=1):
+            title = (block.get("title", "") or "").strip()
+            abstract = (block.get("abstract", "") or "").strip()
+            one_pager = (block.get("one_pager", "") or "").strip()
+            chunks.append(
+                "\n".join(
+                    [
+                        f"PAPER {idx}",
+                        f"Title: {title}",
+                        "",
+                        "Abstract",
+                        abstract,
+                        "",
+                        "One Pager",
+                        one_pager,
+                    ]
+                )
+            )
+        return f"\n\n{separator}\n\n".join(chunks)
+
+    def _save_podcast_report_pdf(self, paper_blocks, out_path):
+        page_w, page_h = letter
+        left = 54
+        right = page_w - 54
+        top = page_h - 54
+        bottom = 54
+        line_h = 14
+        y = top
+
+        doc = canvas.Canvas(out_path, pagesize=letter)
+        doc.setTitle("Podcast Report")
+
+        def new_page():
+            nonlocal y
+            doc.showPage()
+            y = top
+
+        def ensure_space(lines=1):
+            nonlocal y
+            if y - (lines * line_h) < bottom:
+                new_page()
+
+        def draw_text_block(text, font_name="Times-Roman", font_size=11):
+            nonlocal y
+            text = (text or "").strip()
+            if not text:
+                ensure_space(1)
+                y -= line_h
+                return
+
+            max_w = right - left
+            doc.setFont(font_name, font_size)
+            for para in text.splitlines():
+                words = para.split()
+                if not words:
+                    ensure_space(1)
+                    y -= line_h
+                    continue
+                line = words[0]
+                for word in words[1:]:
+                    candidate = f"{line} {word}"
+                    if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_w:
+                        line = candidate
+                    else:
+                        ensure_space(1)
+                        doc.drawString(left, y, line)
+                        y -= line_h
+                        line = word
+                ensure_space(1)
+                doc.drawString(left, y, line)
+                y -= line_h
+
+        for idx, block in enumerate(paper_blocks, start=1):
+            ensure_space(6)
+            doc.setLineWidth(1)
+            doc.setStrokeColorRGB(0.6, 0.6, 0.6)
+            doc.line(left, y, right, y)
+            y -= line_h
+
+            doc.setFont("Times-Bold", 15)
+            doc.drawString(left, y, f"Paper {idx}")
+            y -= line_h + 2
+
+            doc.setFont("Times-Bold", 12)
+            doc.drawString(left, y, "Title")
+            y -= line_h
+            draw_text_block(block.get("title", ""), "Times-Roman", 11)
+            y -= 6
+
+            doc.setFont("Times-Bold", 12)
+            doc.drawString(left, y, "Abstract")
+            y -= line_h
+            draw_text_block(block.get("abstract", ""), "Times-Roman", 11)
+            y -= 6
+
+            doc.setFont("Times-Bold", 12)
+            doc.drawString(left, y, "One Pager")
+            y -= line_h
+            draw_text_block(block.get("one_pager", ""), "Times-Roman", 11)
+            y -= 10
+
+        doc.save()
 
     def _load_onepager_from_disk(self, paper_title, source_url):
         path = self._onepager_path_for_paper(paper_title, source_url)
