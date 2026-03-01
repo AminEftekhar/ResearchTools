@@ -18,12 +18,17 @@ MAX_RESULTS = 120
 DEFAULT_OLLAMA_MODEL = "deepseek-r1:1.5b"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 DEFAULT_PAPER_DOWNLOAD_DIR = r"C:\Users\Amin\OneDrive\Documents\Papers"
-APP_STATE_PATH = os.path.join(
+ONE_PAGER_DIR_NAME = "OnePagers"
+LEGACY_APP_STATE_PATH = os.path.join(
     os.path.expanduser("~"),
     "AppData",
     "Roaming",
     "PaperSummarizer",
     "state.json",
+)
+APP_STATE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "paper_summarizer_state.json",
 )
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
@@ -90,13 +95,19 @@ class ArxivOpticsUI:
         self.tabs = {}
         self.tab_counter = 0
         self.plus_tab_id = None
+        self.hovered_tab_id = None
         self.link_button_icon = None
+        self._suppress_state_events = True
 
         self._build_ui()
         self.root.bind_all("<Control-d>", self.download_selected_pdf)
+        self.root.bind_all("<Control-w>", self.remove_current_tab)
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
-        if not self._restore_tabs_state():
-            self.refresh_data()
+        restored = self._restore_tabs_state()
+        if not restored:
+            self.add_new_tab(query=ARXIV_QUERY, label="physics.optics", refresh=True, persist=False)
+        self._suppress_state_events = False
+        self._save_app_state()
 
     def _apply_modern_style(self):
         style = ttk.Style(self.root)
@@ -251,9 +262,9 @@ class ArxivOpticsUI:
         self.notebook = ttk.Notebook(tabs_row)
         self.notebook.pack(side="left", fill="both", expand=True)
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-
-        self.add_new_tab(query=ARXIV_QUERY, label="physics.optics", refresh=False)
-        self._ensure_plus_tab()
+        self.notebook.bind("<Motion>", self._on_notebook_motion)
+        self.notebook.bind("<Leave>", self._on_notebook_leave)
+        self.notebook.bind("<Button-1>", self._on_notebook_click, add="+")
         footer = ttk.Frame(self.root, style="Footer.TFrame", padding=(14, 4, 14, 10))
         footer.pack(fill="x")
 
@@ -269,6 +280,7 @@ class ArxivOpticsUI:
         open_folder_btn.pack(side="right", padx=button_padx)
 
     def add_new_tab(self, query=ARXIV_QUERY, label="physics.optics", refresh=True, persist=True):
+        label = self._clean_tab_label(label)
         self.tab_counter += 1
         tab = ttk.Frame(self.notebook, style="Body.TFrame", padding=(8, 8, 8, 8))
         cols = ("title", "authors")
@@ -317,11 +329,32 @@ class ArxivOpticsUI:
             self.notebook.add(tab, text=label)
         self.notebook.select(tab)
         self._ensure_plus_tab()
+        self._refresh_tab_headers()
         self._sync_active_context_ui()
         if refresh:
             self.refresh_data()
         if persist:
             self._save_app_state()
+
+    def remove_current_tab(self, _event=None):
+        ctx = self._get_active_context()
+        if not ctx:
+            return
+
+        if len(self.tabs) <= 1:
+            messagebox.showinfo("Cannot remove tab", "At least one tab must remain open.")
+            return
+
+        tab_id = str(ctx["frame"])
+        try:
+            self.notebook.forget(ctx["frame"])
+        except Exception:
+            return
+        self.tabs.pop(tab_id, None)
+        self.hovered_tab_id = None
+        self._refresh_tab_headers()
+        self._sync_active_context_ui()
+        self._save_app_state()
 
     def _get_active_context(self):
         if not hasattr(self, "notebook"):
@@ -355,8 +388,10 @@ class ArxivOpticsUI:
         if selected and selected == self.plus_tab_id:
             self.add_new_tab()
             return
+        self._refresh_tab_headers()
         self._sync_active_context_ui()
-        self._save_app_state()
+        if not self._suppress_state_events:
+            self._save_app_state()
 
     def _ensure_plus_tab(self):
         if self.plus_tab_id and str(self.plus_tab_id) in self.notebook.tabs():
@@ -366,6 +401,73 @@ class ArxivOpticsUI:
         plus_frame = ttk.Frame(self.notebook, style="Body.TFrame")
         self.plus_tab_id = str(plus_frame)
         self.notebook.add(plus_frame, text="+")
+        self._refresh_tab_headers()
+
+    def _refresh_tab_headers(self):
+        if not hasattr(self, "notebook"):
+            return
+        for tab_id in self.notebook.tabs():
+            if tab_id == self.plus_tab_id:
+                self.notebook.tab(tab_id, text="+")
+                continue
+            ctx = self.tabs.get(tab_id)
+            if not ctx:
+                continue
+            label = self._clean_tab_label(ctx.get("label", "physics.optics"))
+            tab_text = f"{label}   x" if tab_id == self.hovered_tab_id else label
+            self.notebook.tab(tab_id, text=tab_text)
+
+    def _tab_id_at_xy(self, x, y):
+        try:
+            idx = self.notebook.index(f"@{x},{y}")
+        except tk.TclError:
+            return None
+        tabs = self.notebook.tabs()
+        if idx < 0 or idx >= len(tabs):
+            return None
+        return tabs[idx]
+
+    def _on_notebook_motion(self, event):
+        tab_id = self._tab_id_at_xy(event.x, event.y)
+        if tab_id == self.plus_tab_id:
+            tab_id = None
+        if tab_id != self.hovered_tab_id:
+            self.hovered_tab_id = tab_id
+            self._refresh_tab_headers()
+
+    def _on_notebook_leave(self, _event=None):
+        if self.hovered_tab_id is not None:
+            self.hovered_tab_id = None
+            self._refresh_tab_headers()
+
+    def _on_notebook_click(self, event):
+        tab_id = self._tab_id_at_xy(event.x, event.y)
+        if not tab_id or tab_id == self.plus_tab_id or tab_id != self.hovered_tab_id:
+            return
+        # Prevent accidental closes while switching tabs.
+        if tab_id != self.notebook.select():
+            return
+        if len(self.tabs) <= 1:
+            return
+        try:
+            idx = self.notebook.index(tab_id)
+            x, y, w, h = self.notebook.bbox(idx)
+        except tk.TclError:
+            return
+        close_font = tkfont.Font(family="SF Pro Text", size=11, weight="bold")
+        close_width = close_font.measure("x") + 6
+        if event.x < (x + w - close_width):
+            return
+        frame = self.tabs.get(tab_id, {}).get("frame")
+        if not frame:
+            return
+        self.notebook.forget(frame)
+        self.tabs.pop(tab_id, None)
+        self.hovered_tab_id = None
+        self._refresh_tab_headers()
+        self._sync_active_context_ui()
+        self._save_app_state()
+        return "break"
 
     def refresh_data(self):
         ctx = self._get_active_context()
@@ -488,9 +590,10 @@ class ArxivOpticsUI:
 
         query, label = parsed
         ctx["query"] = query
-        ctx["label"] = label
-        self.notebook.tab(ctx["frame"], text=label)
-        self._set_context_status(ctx, f"Using source: {label}")
+        clean_label = self._clean_tab_label(label)
+        ctx["label"] = clean_label
+        self._refresh_tab_headers()
+        self._set_context_status(ctx, f"Using source: {clean_label}")
         self._sync_active_context_ui()
         self._save_app_state()
         if dialog is not None:
@@ -498,6 +601,8 @@ class ArxivOpticsUI:
         self.refresh_data()
 
     def _save_app_state(self):
+        if self._suppress_state_events:
+            return
         try:
             os.makedirs(os.path.dirname(APP_STATE_PATH), exist_ok=True)
             content_tabs = []
@@ -511,7 +616,7 @@ class ArxivOpticsUI:
                 content_tabs.append(
                     {
                         "query": ctx.get("query", ARXIV_QUERY),
-                        "label": ctx.get("label", "physics.optics"),
+                        "label": self._clean_tab_label(ctx.get("label", "physics.optics")),
                     }
                 )
             selected_tab = self.notebook.select() if hasattr(self, "notebook") else ""
@@ -527,10 +632,11 @@ class ArxivOpticsUI:
             pass
 
     def _restore_tabs_state(self):
-        if not os.path.exists(APP_STATE_PATH):
+        state_path = APP_STATE_PATH if os.path.exists(APP_STATE_PATH) else LEGACY_APP_STATE_PATH
+        if not os.path.exists(state_path):
             return False
         try:
-            with open(APP_STATE_PATH, "r", encoding="utf-8") as f:
+            with open(state_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             saved_tabs = payload.get("tabs", [])
             if not saved_tabs:
@@ -556,7 +662,9 @@ class ArxivOpticsUI:
 
         for tab_def in saved_tabs:
             query = str(tab_def.get("query", ARXIV_QUERY)).strip() or ARXIV_QUERY
-            label = str(tab_def.get("label", "physics.optics")).strip() or "physics.optics"
+            label = self._clean_tab_label(
+                str(tab_def.get("label", "physics.optics")).strip() or "physics.optics"
+            )
             self.add_new_tab(query=query, label=label, refresh=False, persist=False)
 
         self._ensure_plus_tab()
@@ -572,6 +680,13 @@ class ArxivOpticsUI:
     def _on_app_close(self):
         self._save_app_state()
         self.root.destroy()
+
+    def _clean_tab_label(self, label):
+        text = str(label or "").strip()
+        if not text:
+            return "physics.optics"
+        text = re.sub(r"^\s*Tab\s*\d+\s*:\s*", "", text, flags=re.IGNORECASE)
+        return text
 
     def _parse_arxiv_link_to_query(self, link_text):
         parsed = urlparse(link_text)
@@ -645,14 +760,20 @@ class ArxivOpticsUI:
             )
             return
 
+        paper_title = (ctx["tree"].item(item_id, "values")[0] or "").strip() or "Untitled paper"
+        file_path = self._pdf_path_for_paper(paper_title, source_url)
+        if os.path.exists(file_path):
+            self._set_context_status(ctx, f"Opened existing PDF: {os.path.basename(file_path)}")
+            try:
+                os.startfile(file_path)
+            except OSError as exc:
+                messagebox.showerror("File error", f"Could not open PDF.\n\n{exc}")
+            return
+
         self._set_context_status(ctx, "Downloading PDF...")
         self.root.update_idletasks()
         try:
-            save_dir = os.getenv("PAPERS_DIR", DEFAULT_PAPER_DOWNLOAD_DIR).strip() or DEFAULT_PAPER_DOWNLOAD_DIR
-            os.makedirs(save_dir, exist_ok=True)
-
-            filename = self._filename_from_pdf_url(pdf_url)
-            file_path = os.path.join(save_dir, filename)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
             req = Request(
                 pdf_url,
@@ -665,7 +786,7 @@ class ArxivOpticsUI:
             with open(file_path, "wb") as f:
                 f.write(pdf_data)
 
-            self._set_context_status(ctx, f"Downloaded PDF: {filename}")
+            self._set_context_status(ctx, f"Downloaded PDF: {os.path.basename(file_path)}")
             os.startfile(file_path)
         except URLError as exc:
             self._set_context_status(ctx, "PDF download failed.")
@@ -752,6 +873,22 @@ class ArxivOpticsUI:
             return
 
         paper_title = ctx["tree"].item(item_id, "values")[0]
+        source_url = ctx["url_by_item"].get(item_id, "")
+        onepager_path = self._onepager_path_for_paper(paper_title, source_url)
+
+        if os.path.exists(onepager_path):
+            try:
+                with open(onepager_path, "r", encoding="utf-8") as f:
+                    saved_text = f.read().strip()
+                if saved_text:
+                    normalized = self._normalize_one_pager_text(saved_text)
+                    ctx["one_pager_by_item"][item_id] = normalized
+                    self._set_context_status(ctx, "Opened saved one-pager.")
+                    self._open_one_pager_window(paper_title, normalized)
+                    return
+            except OSError:
+                pass
+
         cached = ctx["one_pager_by_item"].get(item_id)
         if cached:
             normalized = self._normalize_one_pager_text(cached)
@@ -817,6 +954,14 @@ class ArxivOpticsUI:
         ctx["one_pager_inflight"].discard(item_id)
         normalized = self._normalize_one_pager_text(text)
         ctx["one_pager_by_item"][item_id] = normalized
+        source_url = ctx["url_by_item"].get(item_id, "")
+        onepager_path = self._onepager_path_for_paper(title, source_url)
+        try:
+            os.makedirs(os.path.dirname(onepager_path), exist_ok=True)
+            with open(onepager_path, "w", encoding="utf-8") as f:
+                f.write(normalized)
+        except OSError:
+            pass
         self._set_context_status(ctx, "One-pager ready.")
         self._open_one_pager_window(title, normalized)
 
@@ -871,6 +1016,42 @@ class ArxivOpticsUI:
         arxiv_id = pdf_url.rsplit("/", 1)[-1]
         arxiv_id = arxiv_id.replace(".pdf", "").replace("/", "_")
         return f"{arxiv_id}.pdf"
+
+    def _papers_dir(self):
+        return os.getenv("PAPERS_DIR", DEFAULT_PAPER_DOWNLOAD_DIR).strip() or DEFAULT_PAPER_DOWNLOAD_DIR
+
+    def _safe_filename(self, text, fallback):
+        cleaned = re.sub(r'[<>:"/\\|?*]+', "_", (text or "").strip())
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().rstrip(".")
+        if not cleaned:
+            cleaned = fallback
+        if len(cleaned) > 150:
+            cleaned = cleaned[:150].rstrip()
+        return cleaned
+
+    def _extract_arxiv_id(self, source_url):
+        clean = (source_url or "").strip()
+        if "/abs/" in clean:
+            return clean.split("/abs/", 1)[1].strip("/")
+        if "/pdf/" in clean:
+            return clean.split("/pdf/", 1)[1].replace(".pdf", "").strip("/")
+        return ""
+
+    def _pdf_path_for_paper(self, paper_title, source_url):
+        base_dir = self._papers_dir()
+        paper_name = self._safe_filename(paper_title, "paper")
+        return os.path.join(base_dir, f"{paper_name}.pdf")
+
+    def _onepager_path_for_paper(self, paper_title, source_url):
+        base_dir = self._papers_dir()
+        onepager_dir = os.path.join(base_dir, ONE_PAGER_DIR_NAME)
+        paper_name = self._safe_filename(paper_title, "paper")
+        arxiv_id = self._safe_filename(self._extract_arxiv_id(source_url), "")
+        if arxiv_id:
+            filename = f"{paper_name} [{arxiv_id}].txt"
+        else:
+            filename = f"{paper_name}.txt"
+        return os.path.join(onepager_dir, filename)
 
     def _normalize_one_pager_text(self, text):
         cleaned = (text or "").replace("**", "").replace("###", "").replace("##", "")

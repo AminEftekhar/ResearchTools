@@ -1,0 +1,13 @@
+{
+  "tabs": [
+    {
+      "query": "cat:physics.optics",
+      "label": "physics.optics"
+    },
+    {
+      "query": "cat:physics.hist-ph",
+      "label": "physics.hist-ph"
+    }
+  ],
+  "selected_index": 0
+}
