@@ -98,13 +98,7 @@ class ArxivOpticsUI:
         header.pack(fill="x")
         button_padx = 4
 
-<<<<<<< HEAD
-        title_font = tkfont.Font(family="Times New Roman", size=14, weight="bold")
-=======
-        self.summary_icon = self._build_summary_icon()
-
         title_font = tkfont.Font(size=14, weight="bold")
->>>>>>> e38d20ec00e19a1e7b5c372436a883a9583f78fb
         title_label = ttk.Label(
             header,
             text="Recent papers from arXiv: physics.optics",
@@ -128,16 +122,6 @@ class ArxivOpticsUI:
             command=self.open_summary_window,
         )
         summary_btn.pack(side="right", padx=button_padx)
-
-        summary_btn = ttk.Button(
-            header,
-            image=self.summary_icon,
-            command=self.open_summary_window,
-        )
-        summary_btn.pack(side="right", padx=(0, 8))
-
-        refresh_btn = ttk.Button(header, text="Refresh", command=self.refresh_data)
-        refresh_btn.pack(side="right", padx=button_padx)
 
         body = ttk.Frame(self.root, padding=(14, 4, 14, 14))
         body.pack(fill="both", expand=True)
@@ -168,10 +152,19 @@ class ArxivOpticsUI:
         body.grid_columnconfigure(0, weight=1)
 
         self.status_var = tk.StringVar(value="Loading...")
-        status = ttk.Label(
-            self.root, textvariable=self.status_var, anchor="w", padding=(14, 0, 14, 8)
+        footer = ttk.Frame(self.root, padding=(14, 0, 14, 8))
+        footer.pack(fill="x")
+
+        status = ttk.Label(footer, textvariable=self.status_var, anchor="w")
+        status.pack(side="left", fill="x", expand=True)
+
+        refresh_btn = ttk.Button(footer, text="Refresh", command=self.refresh_data)
+        refresh_btn.pack(side="right", padx=button_padx)
+
+        open_folder_btn = ttk.Button(
+            footer, text="Open Papers Folder", command=self.open_papers_folder
         )
-        status.pack(fill="x")
+        open_folder_btn.pack(side="right", padx=button_padx)
 
     def refresh_data(self):
         self.status_var.set("Fetching latest entries...")
@@ -287,6 +280,14 @@ class ArxivOpticsUI:
         except Exception as exc:
             self.status_var.set("Unexpected error during PDF download.")
             messagebox.showerror("Error", f"Unexpected error:\n\n{exc}")
+
+    def open_papers_folder(self):
+        try:
+            papers_dir = os.getenv("PAPERS_DIR", DEFAULT_PAPER_DOWNLOAD_DIR).strip() or DEFAULT_PAPER_DOWNLOAD_DIR
+            os.makedirs(papers_dir, exist_ok=True)
+            os.startfile(papers_dir)
+        except OSError as exc:
+            messagebox.showerror("Folder error", f"Could not open papers folder.\n\n{exc}")
 
     def open_summary_window(self):
         selected = self.tree.selection()
