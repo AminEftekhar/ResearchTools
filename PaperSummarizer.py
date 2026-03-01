@@ -97,7 +97,13 @@ class ArxivOpticsUI:
         self.plus_tab_id = None
         self.hovered_tab_id = None
         self.link_button_icon = None
+        self.footer = None
+        self.search_host = None
+        self.status_label = None
         self._suppress_state_events = True
+        self.status_display_max_chars = 72
+        self.search_placeholder = "Enter paper names, authors, keywords..."
+        self.search_placeholder_active = True
 
         self._build_ui()
         self.root.bind_all("<Control-d>", self.download_selected_pdf)
@@ -230,21 +236,27 @@ class ArxivOpticsUI:
         )
         source_btn.pack(side="left", padx=(8, 0))
 
+        right_panel = ttk.Frame(header, style="Header.TFrame")
+        right_panel.pack(side="right", anchor="n")
+
+        actions_row = ttk.Frame(right_panel, style="Header.TFrame")
+        actions_row.pack(side="top", anchor="e")
+
         one_pager_btn = ttk.Button(
-            header,
-            text="One Pager (DeepSeek)",
+            actions_row,
+            text="One Pager",
             command=self.open_or_generate_one_pager,
             style="Mac.TButton",
         )
         one_pager_btn.pack(side="right", padx=button_padx)
 
         download_btn = ttk.Button(
-            header, text="Open PDF", command=self.download_selected_pdf, style="Mac.TButton"
+            actions_row, text="Open PDF", command=self.download_selected_pdf, style="Mac.TButton"
         )
         download_btn.pack(side="right", padx=button_padx)
 
         summary_btn = ttk.Button(
-            header,
+            actions_row,
             text="Abstract",
             command=self.open_summary_window,
             style="Mac.TButton",
@@ -267,24 +279,63 @@ class ArxivOpticsUI:
         self.notebook.bind("<Button-1>", self._on_notebook_click, add="+")
         footer = ttk.Frame(self.root, style="Footer.TFrame", padding=(14, 4, 14, 10))
         footer.pack(fill="x")
+        footer.configure(height=50)
+        self.footer = footer
 
         status = ttk.Label(footer, textvariable=self.status_var, anchor="w", style="Status.TLabel")
         status.pack(side="left", fill="x", expand=True)
+        self.status_label = status
 
-        refresh_btn = ttk.Button(footer, text="Refresh", command=self.refresh_data, style="Mac.TButton")
+        search_host = ttk.Frame(self.root, style="Footer.TFrame")
+        self.search_host = search_host
+
+        self.search_var = tk.StringVar(value=self.search_placeholder)
+        self.search_entry = tk.Entry(
+            search_host,
+            textvariable=self.search_var,
+            width=34,
+            fg="#7A7A7A",
+            relief="solid",
+            bd=1,
+        )
+        self.search_entry.pack(anchor="center", pady=0)
+        self.search_entry.bind("<Return>", self.apply_search_filter)
+        self.search_entry.bind("<FocusIn>", self._on_search_focus_in)
+        self.search_entry.bind("<FocusOut>", self._on_search_focus_out)
+
+        footer_actions = ttk.Frame(footer, style="Footer.TFrame")
+        footer_actions.pack(side="right")
+
+        refresh_btn = ttk.Button(footer_actions, text="Refresh", command=self.refresh_data, style="Mac.TButton")
         refresh_btn.pack(side="right", padx=button_padx)
 
         open_folder_btn = ttk.Button(
-            footer, text="Open Papers Folder", command=self.open_papers_folder, style="Mac.TButton"
+            footer_actions, text="Open Papers Folder", command=self.open_papers_folder, style="Mac.TButton"
         )
         open_folder_btn.pack(side="right", padx=button_padx)
+
+        self.root.bind("<Configure>", self._position_search_bar)
+        self.root.after(20, self._position_search_bar)
+
+    def _position_search_bar(self, _event=None):
+        if not self.search_host or not self.footer:
+            return
+        self.root.update_idletasks()
+        center_x = self.root.winfo_width() // 2
+        footer_y = self.footer.winfo_y()
+        footer_h = self.footer.winfo_height()
+        center_y = footer_y + (footer_h // 2)
+        self.search_host.place(x=center_x, y=center_y, anchor="center")
+        self._sync_active_context_ui()
 
     def add_new_tab(self, query=ARXIV_QUERY, label="physics.optics", refresh=True, persist=True):
         label = self._clean_tab_label(label)
         self.tab_counter += 1
         tab = ttk.Frame(self.notebook, style="Body.TFrame", padding=(8, 8, 8, 8))
         cols = ("title", "authors")
-        tree = ttk.Treeview(tab, columns=cols, show="tree headings", style="Mac.Treeview")
+        tree = ttk.Treeview(
+            tab, columns=cols, show="tree headings", style="Mac.Treeview", selectmode="extended"
+        )
         tree.heading("#0", text="Published Date")
         tree.heading("title", text="Title")
         tree.heading("authors", text="Authors")
@@ -315,6 +366,8 @@ class ArxivOpticsUI:
             "query": query,
             "label": label,
             "max_results": MAX_RESULTS,
+            "search_query": "",
+            "papers": [],
             "url_by_item": {},
             "authors_by_item": {},
             "summary_by_item": {},
@@ -367,10 +420,11 @@ class ArxivOpticsUI:
     def _set_context_status(self, ctx, text):
         if not ctx:
             return
-        ctx["status_var"].set(text)
+        full_text = str(text or "")
+        ctx["status_var"].set(full_text)
         active = self._get_active_context()
         if active is ctx:
-            self.status_var.set(text)
+            self.status_var.set(self._truncate_status_text(full_text))
 
     def _sync_active_context_ui(self):
         ctx = self._get_active_context()
@@ -381,7 +435,52 @@ class ArxivOpticsUI:
             return
         self.title_var.set(f"Recent papers from arXiv: {ctx['label']}")
         if hasattr(self, "status_var"):
-            self.status_var.set(ctx["status_var"].get())
+            self.status_var.set(self._truncate_status_text(ctx["status_var"].get()))
+        if hasattr(self, "search_var"):
+            self._set_search_entry_text(ctx.get("search_query", ""))
+
+    def _truncate_status_text(self, text):
+        message = str(text or "")
+        if not message:
+            return ""
+
+        max_pixels = None
+        if self.search_host and self.search_host.winfo_ismapped():
+            # Keep space before the centered search bar so status never overlaps it.
+            max_pixels = max(120, self.search_host.winfo_x() - 24)
+
+        if not max_pixels:
+            max_chars = max(20, int(self.status_display_max_chars))
+            if len(message) <= max_chars:
+                return message
+            return message[: max_chars - 3].rstrip() + "..."
+
+        try:
+            font = tkfont.Font(font=self.status_label.cget("font")) if self.status_label else None
+        except Exception:
+            font = None
+
+        if not font:
+            max_chars = max(20, int(self.status_display_max_chars))
+            if len(message) <= max_chars:
+                return message
+            return message[: max_chars - 3].rstrip() + "..."
+
+        if font.measure(message) <= max_pixels:
+            return message
+
+        ellipsis = "..."
+        lo, hi = 0, len(message)
+        best = ellipsis
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = message[:mid].rstrip() + ellipsis
+            if font.measure(candidate) <= max_pixels:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return best
 
     def _on_tab_changed(self, _event=None):
         selected = self.notebook.select()
@@ -477,6 +576,7 @@ class ArxivOpticsUI:
         self.root.update_idletasks()
         tree = ctx["tree"]
         tree.delete(*tree.get_children())
+        ctx["papers"].clear()
         ctx["url_by_item"].clear()
         ctx["authors_by_item"].clear()
         ctx["summary_by_item"].clear()
@@ -502,11 +602,92 @@ class ArxivOpticsUI:
 
         total_count = 0
         for date_key, papers in grouped:
-            date_item = tree.insert(
-                "", "end", text=date_key, values=("", ""), tags=("date_group",)
-            )
             for paper in papers:
-                row_tag = "paper_even" if total_count % 2 == 0 else "paper_odd"
+                ctx["papers"].append(
+                    {
+                        "date": date_key,
+                        "title": paper["title"],
+                        "authors": paper["authors"],
+                        "summary": paper["summary"],
+                        "url": paper["url"],
+                    }
+                )
+                total_count += 1
+
+        self._render_tree_from_current_filter(ctx)
+
+        self._set_context_status(
+            ctx,
+            f"Loaded {total_count} papers in {len(grouped)} publication date groups."
+        )
+
+    def apply_search_filter(self, _event=None):
+        ctx = self._get_active_context()
+        if not ctx:
+            return
+        ctx["search_query"] = self._get_search_text()
+        self._render_tree_from_current_filter(ctx)
+
+    def _set_search_entry_text(self, text):
+        value = (text or "").strip()
+        if not value:
+            self.search_var.set(self.search_placeholder)
+            self.search_entry.configure(fg="#7A7A7A")
+            self.search_placeholder_active = True
+        else:
+            self.search_var.set(value)
+            self.search_entry.configure(fg="#1D1D1F")
+            self.search_placeholder_active = False
+
+    def _on_search_focus_in(self, _event=None):
+        if self.search_placeholder_active:
+            self.search_var.set("")
+            self.search_entry.configure(fg="#1D1D1F")
+            self.search_placeholder_active = False
+
+    def _on_search_focus_out(self, _event=None):
+        if not self.search_var.get().strip():
+            self._set_search_entry_text("")
+
+    def _get_search_text(self):
+        text = self.search_var.get().strip()
+        if self.search_placeholder_active or text == self.search_placeholder:
+            return ""
+        return text
+
+    def _render_tree_from_current_filter(self, ctx):
+        tree = ctx["tree"]
+        tree.delete(*tree.get_children())
+        ctx["url_by_item"].clear()
+        ctx["authors_by_item"].clear()
+        ctx["summary_by_item"].clear()
+
+        query = (ctx.get("search_query") or "").lower()
+        if query:
+            filtered = [
+                p for p in ctx["papers"]
+                if query in p["title"].lower()
+                or query in p["authors"].lower()
+                or query in p["summary"].lower()
+            ]
+        else:
+            filtered = list(ctx["papers"])
+
+        grouped = {}
+        for p in filtered:
+            grouped.setdefault(p["date"], []).append(p)
+
+        sorted_dates = sorted(
+            grouped.keys(),
+            key=lambda d: (d != "Unknown date", d),
+            reverse=True,
+        )
+
+        row_count = 0
+        for date_key in sorted_dates:
+            date_item = tree.insert("", "end", text=date_key, values=("", ""), tags=("date_group",))
+            for paper in grouped[date_key]:
+                row_tag = "paper_even" if row_count % 2 == 0 else "paper_odd"
                 item_id = tree.insert(
                     date_item,
                     "end",
@@ -517,15 +698,16 @@ class ArxivOpticsUI:
                 ctx["url_by_item"][item_id] = paper["url"]
                 ctx["authors_by_item"][item_id] = paper["authors"]
                 ctx["summary_by_item"][item_id] = paper["summary"]
-                total_count += 1
+                row_count += 1
 
         for top_item in tree.get_children():
             tree.item(top_item, open=True)
 
-        self._set_context_status(
-            ctx,
-            f"Loaded {total_count} papers in {len(grouped)} publication date groups."
-        )
+        if query:
+            self._set_context_status(
+                ctx,
+                f"Showing {len(filtered)} matching papers for '{ctx['search_query']}'.",
+            )
 
     def open_link_input_dialog(self):
         dialog = tk.Toplevel(self.root)
@@ -863,84 +1045,113 @@ class ArxivOpticsUI:
             messagebox.showinfo("No paper selected", "Select a paper first.")
             return
 
-        item_id = selected[0]
-        abstract = ctx["summary_by_item"].get(item_id)
-        if not abstract:
+        paper_items = [item_id for item_id in selected if item_id in ctx["summary_by_item"]]
+        if not paper_items:
             messagebox.showinfo(
                 "One pager unavailable",
-                "The selected row is not a paper, or the abstract is missing.",
+                "Selected rows do not contain valid paper abstracts.",
             )
             return
 
-        paper_title = ctx["tree"].item(item_id, "values")[0]
-        source_url = ctx["url_by_item"].get(item_id, "")
-        onepager_path = self._onepager_path_for_paper(paper_title, source_url)
-
-        if os.path.exists(onepager_path):
-            try:
-                with open(onepager_path, "r", encoding="utf-8") as f:
-                    saved_text = f.read().strip()
-                if saved_text:
-                    normalized = self._normalize_one_pager_text(saved_text)
-                    ctx["one_pager_by_item"][item_id] = normalized
-                    self._set_context_status(ctx, "Opened saved one-pager.")
-                    self._open_one_pager_window(paper_title, normalized)
-                    return
-            except OSError:
-                pass
-
-        cached = ctx["one_pager_by_item"].get(item_id)
-        if cached:
-            normalized = self._normalize_one_pager_text(cached)
-            ctx["one_pager_by_item"][item_id] = normalized
-            self._open_one_pager_window(paper_title, normalized)
-            return
-
-        if item_id in ctx["one_pager_inflight"]:
+        inflight = [item_id for item_id in paper_items if item_id in ctx["one_pager_inflight"]]
+        if inflight:
             messagebox.showinfo(
                 "In progress",
-                "One-pager generation is already running for this paper.",
+                "One-pager generation is already running for one or more selected papers.",
             )
             return
 
-        authors = ctx["authors_by_item"].get(item_id, "Unknown authors")
-        ctx["one_pager_inflight"].add(item_id)
-        self._set_context_status(ctx, "Generating one-pager with DeepSeek...")
+        if len(paper_items) == 1:
+            item_id = paper_items[0]
+            paper_title = ctx["tree"].item(item_id, "values")[0]
+            source_url = ctx["url_by_item"].get(item_id, "")
+            saved_text = self._load_onepager_from_disk(paper_title, source_url)
+            if saved_text:
+                normalized = self._normalize_one_pager_text(saved_text)
+                ctx["one_pager_by_item"][item_id] = normalized
+                self._set_context_status(ctx, "Opened saved one-pager.")
+                self._open_one_pager_window(paper_title, normalized)
+                return
 
+            cached = ctx["one_pager_by_item"].get(item_id)
+            if cached:
+                normalized = self._normalize_one_pager_text(cached)
+                ctx["one_pager_by_item"][item_id] = normalized
+                self._open_one_pager_window(paper_title, normalized)
+                return
+
+            authors = ctx["authors_by_item"].get(item_id, "Unknown authors")
+            abstract = ctx["summary_by_item"].get(item_id, "")
+            ctx["one_pager_inflight"].add(item_id)
+            self._set_context_status(ctx, "Generating one-pager...")
+
+            worker = threading.Thread(
+                target=self._generate_one_pager_worker,
+                args=(str(ctx["frame"]), item_id, paper_title, authors, abstract),
+                daemon=True,
+            )
+            worker.start()
+            return
+
+        for item_id in paper_items:
+            ctx["one_pager_inflight"].add(item_id)
+        self._set_context_status(ctx, f"Generating one-pagers for {len(paper_items)} papers...")
         worker = threading.Thread(
-            target=self._generate_one_pager_worker,
-            args=(str(ctx["frame"]), item_id, paper_title, authors, abstract),
+            target=self._generate_batch_one_pagers_worker,
+            args=(str(ctx["frame"]), paper_items),
             daemon=True,
         )
         worker.start()
 
+    def _generate_batch_one_pagers_worker(self, tab_id, item_ids):
+        ctx = self.tabs.get(tab_id)
+        if not ctx:
+            return
+
+        aggregate = []
+        for idx, item_id in enumerate(item_ids, start=1):
+            title = ctx["tree"].item(item_id, "values")[0]
+            authors = ctx["authors_by_item"].get(item_id, "Unknown authors")
+            abstract = ctx["summary_by_item"].get(item_id, "")
+            source_url = ctx["url_by_item"].get(item_id, "")
+
+            self.root.after(
+                0,
+                lambda i=idx, n=len(item_ids): self._set_context_status(
+                    self.tabs.get(tab_id),
+                    f"Generating one-pager {i}/{n}...",
+                ),
+            )
+
+            saved_text = self._load_onepager_from_disk(title, source_url)
+            if saved_text:
+                normalized = self._normalize_one_pager_text(saved_text)
+                ctx["one_pager_by_item"][item_id] = normalized
+                aggregate.append((title, normalized))
+                continue
+
+            cached = ctx["one_pager_by_item"].get(item_id)
+            if cached:
+                normalized = self._normalize_one_pager_text(cached)
+                ctx["one_pager_by_item"][item_id] = normalized
+                self._save_onepager_to_disk(title, source_url, normalized)
+                aggregate.append((title, normalized))
+                continue
+
+            try:
+                text = self._request_one_pager_from_model(title, authors, abstract)
+                normalized = self._normalize_one_pager_text(text)
+                ctx["one_pager_by_item"][item_id] = normalized
+                self._save_onepager_to_disk(title, source_url, normalized)
+                aggregate.append((title, normalized))
+            except Exception as exc:
+                aggregate.append((title, f"Generation failed:\n{exc}"))
+
+        self.root.after(0, lambda: self._on_batch_one_pagers_ready(tab_id, item_ids, aggregate))
+
     def _generate_one_pager_worker(self, tab_id, item_id, title, authors, abstract):
         try:
-            model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
-            endpoint = os.getenv("OLLAMA_API_URL", OLLAMA_API_URL).strip() or OLLAMA_API_URL
-            prompt = self._build_one_pager_prompt(title, authors, abstract)
-            payload = json.dumps(
-                {
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.2, "num_predict": 850},
-                }
-            )
-            req = Request(
-                endpoint,
-                data=payload.encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urlopen(req, timeout=180) as response:
-                raw = response.read()
-            data = json.loads(raw.decode("utf-8"))
-            text = (data.get("response") or "").strip()
-            if not text:
-                raise RuntimeError(
-                    "DeepSeek returned an empty response. Check Ollama and model availability."
-                )
+            text = self._request_one_pager_from_model(title, authors, abstract)
         except Exception as exc:
             self.root.after(0, lambda: self._on_one_pager_error(tab_id, item_id, exc))
             return
@@ -955,15 +1166,18 @@ class ArxivOpticsUI:
         normalized = self._normalize_one_pager_text(text)
         ctx["one_pager_by_item"][item_id] = normalized
         source_url = ctx["url_by_item"].get(item_id, "")
-        onepager_path = self._onepager_path_for_paper(title, source_url)
-        try:
-            os.makedirs(os.path.dirname(onepager_path), exist_ok=True)
-            with open(onepager_path, "w", encoding="utf-8") as f:
-                f.write(normalized)
-        except OSError:
-            pass
+        self._save_onepager_to_disk(title, source_url, normalized)
         self._set_context_status(ctx, "One-pager ready.")
         self._open_one_pager_window(title, normalized)
+
+    def _on_batch_one_pagers_ready(self, tab_id, item_ids, aggregate):
+        ctx = self.tabs.get(tab_id)
+        if not ctx:
+            return
+        for item_id in item_ids:
+            ctx["one_pager_inflight"].discard(item_id)
+        self._set_context_status(ctx, f"Ready: {len(aggregate)} one-pagers.")
+        self._open_aggregate_one_pager_window(aggregate)
 
     def _on_one_pager_error(self, tab_id, item_id, exc):
         ctx = self.tabs.get(tab_id)
@@ -996,6 +1210,32 @@ class ArxivOpticsUI:
             "- Keep equations on their own lines when possible.\n"
             "- Under 'Takeaways', output bullet lines starting with '- '."
         )
+
+    def _request_one_pager_from_model(self, title, authors, abstract):
+        model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+        endpoint = os.getenv("OLLAMA_API_URL", OLLAMA_API_URL).strip() or OLLAMA_API_URL
+        prompt = self._build_one_pager_prompt(title, authors, abstract)
+        payload = json.dumps(
+            {
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 850},
+            }
+        )
+        req = Request(
+            endpoint,
+            data=payload.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=180) as response:
+            raw = response.read()
+        data = json.loads(raw.decode("utf-8"))
+        text = (data.get("response") or "").strip()
+        if not text:
+            raise RuntimeError("DeepSeek returned an empty response. Check Ollama/model.")
+        return text
 
     def _build_arxiv_pdf_url(self, source_url):
         clean_url = (source_url or "").strip()
@@ -1052,6 +1292,53 @@ class ArxivOpticsUI:
         else:
             filename = f"{paper_name}.txt"
         return os.path.join(onepager_dir, filename)
+
+    def _load_onepager_from_disk(self, paper_title, source_url):
+        path = self._onepager_path_for_paper(paper_title, source_url)
+        if not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
+    def _save_onepager_to_disk(self, paper_title, source_url, text):
+        path = self._onepager_path_for_paper(paper_title, source_url)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text or "")
+        except OSError:
+            pass
+
+    def _open_aggregate_one_pager_window(self, aggregate_items):
+        popup = tk.Toplevel(self.root)
+        popup.title("One Pager Aggregate")
+        popup.geometry("920x620")
+        popup.minsize(620, 420)
+
+        container = ttk.Frame(popup, padding=12)
+        container.pack(fill="both", expand=True)
+
+        text_widget = tk.Text(
+            container,
+            wrap="word",
+            font=("SF Pro Text", 11),
+            bg="#FFFFFF",
+            fg="#1D1D1F",
+            relief="flat",
+        )
+        text_widget.pack(fill="both", expand=True)
+        text_widget.tag_configure("paper_title", font=("SF Pro Display", 13, "bold"))
+        text_widget.tag_configure("separator", foreground="#808080")
+
+        for idx, (title, body) in enumerate(aggregate_items, start=1):
+            text_widget.insert("end", f"{idx}. {title}\n", "paper_title")
+            text_widget.insert("end", f"{body}\n")
+            if idx < len(aggregate_items):
+                text_widget.insert("end", "\n" + ("-" * 70) + "\n\n", "separator")
+        text_widget.configure(state="disabled")
 
     def _normalize_one_pager_text(self, text):
         cleaned = (text or "").replace("**", "").replace("###", "").replace("##", "")
