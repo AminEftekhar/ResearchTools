@@ -77,13 +77,17 @@ class ArxivOpticsUI:
         self.root.title("Recent arXiv Optics Papers")
         self.root.geometry("980x650")
         self.root.minsize(780, 500)
+        self.root.option_add("*Font", "{Times New Roman} 11")
+        style = ttk.Style(self.root)
+        style.configure(".", font=("Times New Roman", 11))
+        style.configure("Treeview.Heading", font=("Times New Roman", 11, "bold"))
+        style.configure("Treeview", borderwidth=1, relief="solid")
 
         self.url_by_item = {}
         self.authors_by_item = {}
         self.summary_by_item = {}
         self.one_pager_by_item = {}
         self.one_pager_inflight = set()
-        self.summary_icon = None
 
         self._build_ui()
         self.root.bind_all("<Control-d>", self.download_selected_pdf)
@@ -92,16 +96,9 @@ class ArxivOpticsUI:
     def _build_ui(self):
         header = ttk.Frame(self.root, padding=(14, 10))
         header.pack(fill="x")
+        button_padx = 4
 
-        self.summary_icon = self._build_summary_icon()
-        summary_btn = ttk.Button(
-            header,
-            image=self.summary_icon,
-            command=self.open_summary_window,
-        )
-        summary_btn.pack(side="left", padx=(0, 8))
-
-        title_font = tkfont.Font(size=14, weight="bold")
+        title_font = tkfont.Font(family="Times New Roman", size=14, weight="bold")
         title_label = ttk.Label(
             header,
             text="Recent papers from arXiv: physics.optics",
@@ -112,15 +109,22 @@ class ArxivOpticsUI:
         one_pager_btn = ttk.Button(
             header, text="One Pager (DeepSeek)", command=self.open_or_generate_one_pager
         )
-        one_pager_btn.pack(side="right", padx=(0, 8))
+        one_pager_btn.pack(side="right", padx=button_padx)
 
         download_btn = ttk.Button(
-            header, text="Download PDF", command=self.download_selected_pdf
+            header, text="Open PDF", command=self.download_selected_pdf
         )
-        download_btn.pack(side="right", padx=(0, 8))
+        download_btn.pack(side="right", padx=button_padx)
+
+        summary_btn = ttk.Button(
+            header,
+            text="Abstract",
+            command=self.open_summary_window,
+        )
+        summary_btn.pack(side="right", padx=button_padx)
 
         refresh_btn = ttk.Button(header, text="Refresh", command=self.refresh_data)
-        refresh_btn.pack(side="right")
+        refresh_btn.pack(side="right", padx=button_padx)
 
         body = ttk.Frame(self.root, padding=(14, 4, 14, 14))
         body.pack(fill="both", expand=True)
@@ -135,6 +139,9 @@ class ArxivOpticsUI:
         self.tree.column("authors", width=280, stretch=True)
         self.tree.bind("<Double-1>", self.open_selected_link)
         self.tree.bind("<Return>", self.open_selected_link)
+        self.tree.tag_configure("date_group", background="#E9EEF5")
+        self.tree.tag_configure("paper_even", background="#FFFFFF")
+        self.tree.tag_configure("paper_odd", background="#F6F8FB")
 
         vscroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         hscroll = ttk.Scrollbar(body, orient="horizontal", command=self.tree.xview)
@@ -180,13 +187,17 @@ class ArxivOpticsUI:
 
         total_count = 0
         for date_key, papers in grouped:
-            date_item = self.tree.insert("", "end", text=date_key, values=("", ""))
+            date_item = self.tree.insert(
+                "", "end", text=date_key, values=("", ""), tags=("date_group",)
+            )
             for paper in papers:
+                row_tag = "paper_even" if total_count % 2 == 0 else "paper_odd"
                 item_id = self.tree.insert(
                     date_item,
                     "end",
                     text="",
                     values=(paper["title"], paper["authors"]),
+                    tags=(row_tag,),
                 )
                 self.url_by_item[item_id] = paper["url"]
                 self.authors_by_item[item_id] = paper["authors"]
@@ -292,12 +303,12 @@ class ArxivOpticsUI:
         ttk.Label(
             container,
             text=paper_title,
-            font=tkfont.Font(size=11, weight="bold"),
+            font=tkfont.Font(family="Times New Roman", size=11, weight="bold"),
             wraplength=710,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
-        summary_text = tk.Text(container, wrap="word")
+        summary_text = tk.Text(container, wrap="word", font=("Times New Roman", 11))
         summary_text.pack(fill="both", expand=True)
         summary_text.insert("1.0", summary)
         summary_text.configure(state="disabled")
@@ -437,25 +448,15 @@ class ArxivOpticsUI:
         ttk.Label(
             container,
             text=heading,
-            font=tkfont.Font(size=11, weight="bold"),
+            font=tkfont.Font(family="Times New Roman", size=11, weight="bold"),
             wraplength=810,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
-        text_widget = tk.Text(container, wrap="word")
+        text_widget = tk.Text(container, wrap="word", font=("Times New Roman", 11))
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", body_text)
         text_widget.configure(state="disabled")
-
-    def _build_summary_icon(self):
-        icon = tk.PhotoImage(width=18, height=18)
-        icon.put("#0F4C81", to=(0, 0, 17, 17))
-        icon.put("#FFFFFF", to=(3, 2, 14, 15))
-        icon.put("#CFE2F3", to=(5, 5, 12, 6))
-        icon.put("#CFE2F3", to=(5, 8, 12, 9))
-        icon.put("#CFE2F3", to=(5, 11, 10, 12))
-        return icon
-
 
 def main():
     root = tk.Tk()
