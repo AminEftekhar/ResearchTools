@@ -1,8 +1,10 @@
 import datetime as dt
+import asyncio
 import json
 import os
 import re
 import threading
+import datetime as dt
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
@@ -11,6 +13,10 @@ from urllib.parse import parse_qs, quote_plus, unquote_plus, urlparse
 from urllib.request import Request, urlopen
 import webbrowser
 import xml.etree.ElementTree as ET
+try:
+    import edge_tts
+except Exception:
+    edge_tts = None
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_QUERY = "cat:physics.optics"
@@ -19,6 +25,8 @@ DEFAULT_OLLAMA_MODEL = "deepseek-r1:1.5b"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 DEFAULT_PAPER_DOWNLOAD_DIR = r"C:\Users\Amin\OneDrive\Documents\Papers"
 ONE_PAGER_DIR_NAME = "OnePagers"
+AUDIO_DIR_NAME = "Audio"
+TRANSCRIPTS_DIR_NAME = "Transcripts"
 LEGACY_APP_STATE_PATH = os.path.join(
     os.path.expanduser("~"),
     "AppData",
@@ -249,6 +257,14 @@ class ArxivOpticsUI:
             style="Mac.TButton",
         )
         one_pager_btn.pack(side="right", padx=button_padx)
+
+        podcast_btn = ttk.Button(
+            actions_row,
+            text="Podcast",
+            command=self.create_podcast_for_selection,
+            style="Mac.TButton",
+        )
+        podcast_btn.pack(side="right", padx=button_padx)
 
         download_btn = ttk.Button(
             actions_row, text="Open PDF", command=self.download_selected_pdf, style="Mac.TButton"
@@ -1007,6 +1023,7 @@ class ArxivOpticsUI:
             return
 
         paper_title = ctx["tree"].item(item_id, "values")[0]
+        source_url = ctx["url_by_item"].get(item_id, "")
 
         popup = tk.Toplevel(self.root)
         popup.title("Paper Summary")
@@ -1035,6 +1052,56 @@ class ArxivOpticsUI:
         summary_text.pack(fill="both", expand=True)
         summary_text.insert("1.0", summary)
         summary_text.configure(state="disabled")
+
+        actions = ttk.Frame(container)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="Text to Audio",
+            command=lambda: self._export_text_to_audio_content(summary, paper_title, source_url),
+            style="Mac.TButton",
+        ).pack(side="right")
+
+    def _export_text_to_audio_content(self, text_to_read, title, source_url):
+        if edge_tts is None:
+            messagebox.showerror(
+                "TTS unavailable",
+                "Install edge-tts to enable audio export.\n\nRun:\npy -3 -m pip install edge-tts",
+            )
+            return
+        if not (text_to_read or "").strip():
+            messagebox.showinfo(
+                "No text available",
+                "No text is available to convert to audio.",
+            )
+            return
+
+        out_path = self._audio_path_for_paper(title, source_url)
+        try:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            voice = os.getenv("EDGE_TTS_VOICE", "en-US-AriaNeural").strip() or "en-US-AriaNeural"
+            rate = os.getenv("EDGE_TTS_RATE", "+0%").strip() or "+0%"
+            self._save_audio_with_edge_tts(text_to_read, out_path, voice=voice, rate=rate)
+            active_ctx = self._get_active_context()
+            if active_ctx:
+                self._set_context_status(active_ctx, f"Saved audio: {os.path.basename(out_path)}")
+            os.startfile(out_path)
+        except Exception as exc:
+            messagebox.showerror("Audio export failed", str(exc))
+
+    def _save_audio_with_edge_tts(self, text, out_path, voice, rate):
+        async def _run():
+            communicator = edge_tts.Communicate(text=text, voice=voice, rate=rate)
+            await communicator.save(out_path)
+
+        try:
+            asyncio.run(_run())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
 
     def open_or_generate_one_pager(self):
         ctx = self._get_active_context()
@@ -1102,6 +1169,140 @@ class ArxivOpticsUI:
             daemon=True,
         )
         worker.start()
+
+    def create_podcast_for_selection(self):
+        ctx = self._get_active_context()
+        if not ctx:
+            return
+        if edge_tts is None:
+            messagebox.showerror(
+                "TTS unavailable",
+                "Install edge-tts to enable podcast export.\n\nRun:\npy -3 -m pip install edge-tts",
+            )
+            return
+
+        selected = ctx["tree"].selection()
+        if not selected:
+            messagebox.showinfo("No paper selected", "Select one or more papers first.")
+            return
+
+        jobs = []
+        for item_id in selected:
+            abstract = (ctx["summary_by_item"].get(item_id, "") or "").strip()
+            if not abstract:
+                continue
+            title = (ctx["tree"].item(item_id, "values")[0] or "").strip() or "paper"
+            authors = (ctx["authors_by_item"].get(item_id, "") or "").strip() or "Unknown authors"
+            source_url = (ctx["url_by_item"].get(item_id, "") or "").strip()
+            jobs.append(
+                {
+                    "item_id": item_id,
+                    "title": title,
+                    "authors": authors,
+                    "abstract": abstract,
+                    "source_url": source_url,
+                }
+            )
+
+        if not jobs:
+            messagebox.showinfo(
+                "Podcast unavailable",
+                "Selected rows do not contain valid paper entries.",
+            )
+            return
+
+        self._set_context_status(ctx, f"Preparing podcast for {len(jobs)} papers...")
+        worker = threading.Thread(
+            target=self._generate_podcast_worker,
+            args=(str(ctx["frame"]), jobs),
+            daemon=True,
+        )
+        worker.start()
+
+    def _generate_podcast_worker(self, tab_id, jobs):
+        ctx = self.tabs.get(tab_id)
+        if not ctx:
+            return
+
+        sections = []
+        total = len(jobs)
+        for idx, job in enumerate(jobs, start=1):
+            title = job["title"]
+            abstract = job["abstract"]
+            source_url = job["source_url"]
+            item_id = job["item_id"]
+
+            self.root.after(
+                0,
+                lambda i=idx, n=total: self._set_context_status(
+                    self.tabs.get(tab_id), f"Podcast: processing {i}/{n}..."
+                ),
+            )
+
+            one_pager = (ctx["one_pager_by_item"].get(item_id, "") or "").strip()
+            if not one_pager:
+                one_pager = self._load_onepager_from_disk(title, source_url)
+
+            if not one_pager:
+                try:
+                    generated = self._request_one_pager_from_model(
+                        title,
+                        job["authors"],
+                        abstract,
+                    )
+                    one_pager = self._normalize_one_pager_text(generated)
+                    ctx["one_pager_by_item"][item_id] = one_pager
+                    self._save_onepager_to_disk(title, source_url, one_pager)
+                except Exception as exc:
+                    one_pager = f"One-pager generation failed: {exc}"
+
+            sections.append(
+                "\n".join(
+                    [
+                        f"Title: {title}",
+                        f"Abstract: {abstract}",
+                        f"One Pager: {one_pager}",
+                    ]
+                )
+            )
+
+        full_text = "\n\n".join(sections).strip()
+        if not full_text:
+            self.root.after(
+                0, lambda: messagebox.showerror("Podcast failed", "No text was available to synthesize.")
+            )
+            return
+
+        out_path = self._podcast_audio_path(len(jobs))
+        transcript_path = self._podcast_transcript_path(out_path)
+        try:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            os.makedirs(os.path.dirname(transcript_path), exist_ok=True)
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                f.write(full_text)
+            voice = os.getenv("EDGE_TTS_VOICE", "en-US-AriaNeural").strip() or "en-US-AriaNeural"
+            rate = os.getenv("EDGE_TTS_RATE", "+0%").strip() or "+0%"
+            self._save_audio_with_edge_tts(full_text, out_path, voice=voice, rate=rate)
+        except Exception as exc:
+            self.root.after(0, lambda: self._on_podcast_error(tab_id, exc))
+            return
+
+        self.root.after(0, lambda: self._on_podcast_ready(tab_id, out_path, total))
+
+    def _on_podcast_ready(self, tab_id, out_path, count):
+        ctx = self.tabs.get(tab_id)
+        if ctx:
+            self._set_context_status(ctx, f"Podcast saved for {count} papers: {os.path.basename(out_path)}")
+        try:
+            os.startfile(out_path)
+        except OSError:
+            pass
+
+    def _on_podcast_error(self, tab_id, exc):
+        ctx = self.tabs.get(tab_id)
+        if ctx:
+            self._set_context_status(ctx, "Podcast generation failed.")
+        messagebox.showerror("Podcast failed", str(exc))
 
     def _generate_batch_one_pagers_worker(self, tab_id, item_ids):
         ctx = self.tabs.get(tab_id)
@@ -1292,6 +1493,29 @@ class ArxivOpticsUI:
         else:
             filename = f"{paper_name}.txt"
         return os.path.join(onepager_dir, filename)
+
+    def _audio_path_for_paper(self, paper_title, source_url):
+        base_dir = self._papers_dir()
+        audio_dir = os.path.join(base_dir, AUDIO_DIR_NAME)
+        paper_name = self._safe_filename(paper_title, "paper")
+        arxiv_id = self._safe_filename(self._extract_arxiv_id(source_url), "")
+        if arxiv_id:
+            filename = f"{paper_name} [{arxiv_id}].mp3"
+        else:
+            filename = f"{paper_name}.mp3"
+        return os.path.join(audio_dir, filename)
+
+    def _podcast_audio_path(self, paper_count):
+        base_dir = self._papers_dir()
+        audio_dir = os.path.join(base_dir, AUDIO_DIR_NAME)
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(audio_dir, f"Podcast_{paper_count}papers_{stamp}.mp3")
+
+    def _podcast_transcript_path(self, podcast_audio_path):
+        audio_dir = os.path.dirname(podcast_audio_path)
+        transcript_dir = os.path.join(audio_dir, TRANSCRIPTS_DIR_NAME)
+        stem = os.path.splitext(os.path.basename(podcast_audio_path))[0]
+        return os.path.join(transcript_dir, f"{stem}.txt")
 
     def _load_onepager_from_disk(self, paper_title, source_url):
         path = self._onepager_path_for_paper(paper_title, source_url)
@@ -1494,6 +1718,15 @@ class ArxivOpticsUI:
             wraplength=810,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
+
+        top_actions = ttk.Frame(container)
+        top_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            top_actions,
+            text="Text to Audio",
+            command=lambda: self._export_text_to_audio_content(body_text, heading, ""),
+            style="Mac.TButton",
+        ).pack(side="right")
 
         canvas = tk.Canvas(
             container,
