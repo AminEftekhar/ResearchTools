@@ -98,7 +98,13 @@ class ArxivOpticsUI:
         header.pack(fill="x")
         button_padx = 4
 
+<<<<<<< HEAD
         title_font = tkfont.Font(family="Times New Roman", size=14, weight="bold")
+=======
+        self.summary_icon = self._build_summary_icon()
+
+        title_font = tkfont.Font(size=14, weight="bold")
+>>>>>>> e38d20ec00e19a1e7b5c372436a883a9583f78fb
         title_label = ttk.Label(
             header,
             text="Recent papers from arXiv: physics.optics",
@@ -122,6 +128,13 @@ class ArxivOpticsUI:
             command=self.open_summary_window,
         )
         summary_btn.pack(side="right", padx=button_padx)
+
+        summary_btn = ttk.Button(
+            header,
+            image=self.summary_icon,
+            command=self.open_summary_window,
+        )
+        summary_btn.pack(side="right", padx=(0, 8))
 
         refresh_btn = ttk.Button(header, text="Refresh", command=self.refresh_data)
         refresh_btn.pack(side="right", padx=button_padx)
