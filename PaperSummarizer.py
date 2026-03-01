@@ -1,9 +1,11 @@
 import datetime as dt
 import asyncio
+import asyncio
 import json
 import os
 import re
 import threading
+import datetime as dt
 import datetime as dt
 import tkinter as tk
 import tkinter.font as tkfont
@@ -17,6 +19,10 @@ try:
     import edge_tts
 except Exception:
     edge_tts = None
+try:
+    import edge_tts
+except Exception:
+    edge_tts = None
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_QUERY = "cat:physics.optics"
@@ -25,6 +31,7 @@ DEFAULT_OLLAMA_MODEL = "deepseek-r1:1.5b"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 DEFAULT_PAPER_DOWNLOAD_DIR = r"C:\Users\Amin\OneDrive\Documents\Papers"
 ONE_PAGER_DIR_NAME = "OnePagers"
+AUDIO_DIR_NAME = "Audio"
 AUDIO_DIR_NAME = "Audio"
 TRANSCRIPTS_DIR_NAME = "Transcripts"
 LEGACY_APP_STATE_PATH = os.path.join(
@@ -257,6 +264,14 @@ class ArxivOpticsUI:
             style="Mac.TButton",
         )
         one_pager_btn.pack(side="right", padx=button_padx)
+
+        podcast_btn = ttk.Button(
+            actions_row,
+            text="Podcast",
+            command=self.create_podcast_for_selection,
+            style="Mac.TButton",
+        )
+        podcast_btn.pack(side="right", padx=button_padx)
 
         podcast_btn = ttk.Button(
             actions_row,
@@ -1024,6 +1039,7 @@ class ArxivOpticsUI:
 
         paper_title = ctx["tree"].item(item_id, "values")[0]
         source_url = ctx["url_by_item"].get(item_id, "")
+        source_url = ctx["url_by_item"].get(item_id, "")
 
         popup = tk.Toplevel(self.root)
         popup.title("Paper Summary")
@@ -1052,6 +1068,56 @@ class ArxivOpticsUI:
         summary_text.pack(fill="both", expand=True)
         summary_text.insert("1.0", summary)
         summary_text.configure(state="disabled")
+
+        actions = ttk.Frame(container)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="Text to Audio",
+            command=lambda: self._export_text_to_audio_content(summary, paper_title, source_url),
+            style="Mac.TButton",
+        ).pack(side="right")
+
+    def _export_text_to_audio_content(self, text_to_read, title, source_url):
+        if edge_tts is None:
+            messagebox.showerror(
+                "TTS unavailable",
+                "Install edge-tts to enable audio export.\n\nRun:\npy -3 -m pip install edge-tts",
+            )
+            return
+        if not (text_to_read or "").strip():
+            messagebox.showinfo(
+                "No text available",
+                "No text is available to convert to audio.",
+            )
+            return
+
+        out_path = self._audio_path_for_paper(title, source_url)
+        try:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            voice = os.getenv("EDGE_TTS_VOICE", "en-US-AriaNeural").strip() or "en-US-AriaNeural"
+            rate = os.getenv("EDGE_TTS_RATE", "+0%").strip() or "+0%"
+            self._save_audio_with_edge_tts(text_to_read, out_path, voice=voice, rate=rate)
+            active_ctx = self._get_active_context()
+            if active_ctx:
+                self._set_context_status(active_ctx, f"Saved audio: {os.path.basename(out_path)}")
+            os.startfile(out_path)
+        except Exception as exc:
+            messagebox.showerror("Audio export failed", str(exc))
+
+    def _save_audio_with_edge_tts(self, text, out_path, voice, rate):
+        async def _run():
+            communicator = edge_tts.Communicate(text=text, voice=voice, rate=rate)
+            await communicator.save(out_path)
+
+        try:
+            asyncio.run(_run())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
 
         actions = ttk.Frame(container)
         actions.pack(fill="x", pady=(8, 0))
@@ -1718,6 +1784,15 @@ class ArxivOpticsUI:
             wraplength=810,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
+
+        top_actions = ttk.Frame(container)
+        top_actions.pack(fill="x", pady=(0, 6))
+        ttk.Button(
+            top_actions,
+            text="Text to Audio",
+            command=lambda: self._export_text_to_audio_content(body_text, heading, ""),
+            style="Mac.TButton",
+        ).pack(side="right")
 
         top_actions = ttk.Frame(container)
         top_actions.pack(fill="x", pady=(0, 6))
