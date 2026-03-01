@@ -77,11 +77,7 @@ class ArxivOpticsUI:
         self.root.title("Recent arXiv Optics Papers")
         self.root.geometry("980x650")
         self.root.minsize(780, 500)
-        self.root.option_add("*Font", "{Times New Roman} 11")
-        style = ttk.Style(self.root)
-        style.configure(".", font=("Times New Roman", 11))
-        style.configure("Treeview.Heading", font=("Times New Roman", 11, "bold"))
-        style.configure("Treeview", borderwidth=1, relief="solid")
+        self._apply_modern_style()
 
         self.url_by_item = {}
         self.authors_by_item = {}
@@ -93,12 +89,60 @@ class ArxivOpticsUI:
         self.root.bind_all("<Control-d>", self.download_selected_pdf)
         self.refresh_data()
 
+    def _apply_modern_style(self):
+        style = ttk.Style(self.root)
+        available = set(style.theme_names())
+        if "vista" in available:
+            style.theme_use("vista")
+        elif "xpnative" in available:
+            style.theme_use("xpnative")
+        elif "clam" in available:
+            style.theme_use("clam")
+
+        bg = "#F3F5F9"
+        panel_bg = "#FFFFFF"
+        text = "#1F2937"
+        accent = "#0A66C2"
+        border = "#D0D7E2"
+
+        self.root.configure(bg=bg)
+        self.root.option_add("*Font", "{Segoe UI} 10")
+
+        style.configure("TFrame", background=bg)
+        style.configure("TLabelframe", background=bg)
+        style.configure("TLabel", background=bg, foreground=text, font=("Segoe UI", 10))
+        style.configure("TButton", font=("Segoe UI", 10), padding=(12, 7))
+
+        style.map(
+            "TButton",
+            foreground=[("disabled", "#7A869A"), ("!disabled", text)],
+            background=[("active", "#EAF2FB"), ("!disabled", panel_bg)],
+            bordercolor=[("active", accent), ("!disabled", border)],
+        )
+
+        style.configure(
+            "Treeview",
+            background=panel_bg,
+            fieldbackground=panel_bg,
+            foreground=text,
+            rowheight=28,
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Segoe UI Semibold", 10),
+            background="#E9EEF6",
+            foreground=text,
+            relief="flat",
+        )
+
     def _build_ui(self):
         header = ttk.Frame(self.root, padding=(14, 10))
         header.pack(fill="x")
         button_padx = 4
 
-        title_font = tkfont.Font(size=14, weight="bold")
+        title_font = tkfont.Font(family="Segoe UI Semibold", size=18, weight="bold")
         title_label = ttk.Label(
             header,
             text="Recent papers from arXiv: physics.optics",
@@ -317,12 +361,12 @@ class ArxivOpticsUI:
         ttk.Label(
             container,
             text=paper_title,
-            font=tkfont.Font(family="Times New Roman", size=11, weight="bold"),
+            font=tkfont.Font(family="Segoe UI Semibold", size=11, weight="bold"),
             wraplength=710,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
-        summary_text = tk.Text(container, wrap="word", font=("Times New Roman", 11))
+        summary_text = tk.Text(container, wrap="word", font=("Segoe UI", 10))
         summary_text.pack(fill="both", expand=True)
         summary_text.insert("1.0", summary)
         summary_text.configure(state="disabled")
@@ -462,19 +506,18 @@ class ArxivOpticsUI:
         ttk.Label(
             container,
             text=heading,
-            font=tkfont.Font(family="Times New Roman", size=11, weight="bold"),
+            font=tkfont.Font(family="Segoe UI Semibold", size=11, weight="bold"),
             wraplength=810,
             justify="left",
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
-        text_widget = tk.Text(container, wrap="word", font=("Times New Roman", 11))
+        text_widget = tk.Text(container, wrap="word", font=("Segoe UI", 10))
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", body_text)
         text_widget.configure(state="disabled")
 
 def main():
     root = tk.Tk()
-    ttk.Style(root).theme_use("clam")
     ArxivOpticsUI(root)
     root.mainloop()
 
