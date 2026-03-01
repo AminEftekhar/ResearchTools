@@ -94,12 +94,6 @@ class ArxivOpticsUI:
         header.pack(fill="x")
 
         self.summary_icon = self._build_summary_icon()
-        summary_btn = ttk.Button(
-            header,
-            image=self.summary_icon,
-            command=self.open_summary_window,
-        )
-        summary_btn.pack(side="left", padx=(0, 8))
 
         title_font = tkfont.Font(size=14, weight="bold")
         title_label = ttk.Label(
@@ -115,9 +109,16 @@ class ArxivOpticsUI:
         one_pager_btn.pack(side="right", padx=(0, 8))
 
         download_btn = ttk.Button(
-            header, text="Download PDF", command=self.download_selected_pdf
+            header, text="Open PDF", command=self.download_selected_pdf
         )
         download_btn.pack(side="right", padx=(0, 8))
+
+        summary_btn = ttk.Button(
+            header,
+            image=self.summary_icon,
+            command=self.open_summary_window,
+        )
+        summary_btn.pack(side="right", padx=(0, 8))
 
         refresh_btn = ttk.Button(header, text="Refresh", command=self.refresh_data)
         refresh_btn.pack(side="right")
