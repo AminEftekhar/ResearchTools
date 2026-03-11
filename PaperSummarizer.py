@@ -8,7 +8,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 from urllib.error import URLError
-from urllib.parse import parse_qs, quote_plus, unquote_plus, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, unquote_plus, urlparse
 from urllib.request import Request, urlopen
 import webbrowser
 import xml.etree.ElementTree as ET
@@ -1348,6 +1348,13 @@ class ArxivOpticsUI:
             self.root.after(0, lambda: self._on_podcast_error(tab_id, exc))
             return
 
+        feed_path = ""
+        feed_url = ""
+        try:
+            feed_path, feed_url = self._rebuild_podcast_feed()
+        except Exception:
+            feed_path, feed_url = "", ""
+
         self.root.after(
             0,
             lambda: self._on_podcast_ready(
@@ -1355,26 +1362,42 @@ class ArxivOpticsUI:
                 out_path,
                 total,
                 report_path if (canvas and letter and pdfmetrics) else "",
+                feed_path,
+                feed_url,
             ),
         )
 
-    def _on_podcast_ready(self, tab_id, out_path, count, report_path=""):
+    def _on_podcast_ready(self, tab_id, out_path, count, report_path="", feed_path="", feed_url=""):
         ctx = self.tabs.get(tab_id)
         if ctx:
+            note_parts = [f"Podcast saved ({count} papers): {os.path.basename(out_path)}"]
+            if report_path:
+                note_parts.append(f"Report: {os.path.basename(report_path)}")
+            elif not (canvas and letter and pdfmetrics):
+                note_parts.append("Install reportlab for PDF reports.")
+            if feed_path:
+                note_parts.append(f"Feed: {os.path.basename(feed_path)}")
             if report_path:
                 self._set_context_status(
                     ctx,
-                    f"Podcast saved ({count} papers): {os.path.basename(out_path)} | Report: {os.path.basename(report_path)}",
+                    " | ".join(note_parts),
                 )
             else:
                 self._set_context_status(
                     ctx,
-                    f"Podcast saved ({count} papers): {os.path.basename(out_path)}. Install reportlab for PDF reports.",
+                    " | ".join(note_parts),
                 )
         try:
             os.startfile(out_path)
         except OSError:
             pass
+        if feed_url:
+            messagebox.showinfo(
+                "Podcast Feed Updated",
+                "Podcast RSS feed has been updated.\n\n"
+                f"Feed file:\n{feed_path}\n\n"
+                f"Subscribe URL (same network):\n{feed_url}",
+            )
 
     def _on_podcast_error(self, tab_id, exc):
         ctx = self.tabs.get(tab_id)
@@ -1600,6 +1623,66 @@ class ArxivOpticsUI:
         reports_dir = os.path.join(audio_dir, REPORTS_DIR_NAME)
         stem = os.path.splitext(os.path.basename(podcast_audio_path))[0]
         return os.path.join(reports_dir, f"{stem}.pdf")
+
+    def _podcast_feed_path(self):
+        return os.path.join(self._papers_dir(), AUDIO_DIR_NAME, "podcast_feed.xml")
+
+    def _podcast_public_base_url(self):
+        configured = (os.getenv("PODCAST_BASE_URL", "") or "").strip().rstrip("/")
+        if configured:
+            return configured
+        return "http://127.0.0.1:8000"
+
+    def _rebuild_podcast_feed(self):
+        audio_dir = os.path.join(self._papers_dir(), AUDIO_DIR_NAME)
+        os.makedirs(audio_dir, exist_ok=True)
+        feed_path = self._podcast_feed_path()
+        base_url = self._podcast_public_base_url()
+
+        episodes = []
+        for name in os.listdir(audio_dir):
+            if not name.lower().endswith(".mp3"):
+                continue
+            path = os.path.join(audio_dir, name)
+            if not os.path.isfile(path):
+                continue
+            stat = os.stat(path)
+            episodes.append(
+                {
+                    "name": name,
+                    "path": path,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+            )
+        episodes.sort(key=lambda e: e["mtime"], reverse=True)
+
+        rss = ET.Element("rss", version="2.0")
+        channel = ET.SubElement(rss, "channel")
+        ET.SubElement(channel, "title").text = "ResearchTools Podcast"
+        ET.SubElement(channel, "description").text = "Auto-generated paper podcast episodes."
+        ET.SubElement(channel, "link").text = f"{base_url}/podcast_feed.xml"
+        ET.SubElement(channel, "language").text = "en-us"
+        now_utc = dt.datetime.now(dt.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        ET.SubElement(channel, "lastBuildDate").text = now_utc
+
+        for ep in episodes:
+            item = ET.SubElement(channel, "item")
+            title = os.path.splitext(ep["name"])[0].replace("_", " ")
+            pub_dt = dt.datetime.fromtimestamp(ep["mtime"], dt.timezone.utc).strftime(
+                "%a, %d %b %Y %H:%M:%S +0000"
+            )
+            rel_name = quote(ep["name"])
+            media_url = f"{base_url}/{rel_name}"
+            ET.SubElement(item, "title").text = title
+            ET.SubElement(item, "description").text = title
+            ET.SubElement(item, "guid").text = media_url
+            ET.SubElement(item, "pubDate").text = pub_dt
+            ET.SubElement(item, "enclosure", url=media_url, length=str(ep["size"]), type="audio/mpeg")
+
+        tree = ET.ElementTree(rss)
+        tree.write(feed_path, encoding="utf-8", xml_declaration=True)
+        return feed_path, f"{base_url}/podcast_feed.xml"
 
     def _build_podcast_transcript_text(self, paper_blocks):
         chunks = []
