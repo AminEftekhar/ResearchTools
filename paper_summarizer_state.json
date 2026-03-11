@@ -9,5 +9,6 @@
       "label": "physics.hist-ph"
     }
   ],
-  "selected_index": 0
+  "selected_index": 0,
+  "last_query": "cat:physics.optics"
 }

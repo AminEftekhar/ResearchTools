@@ -1,5 +1,6 @@
 import datetime as dt
 import asyncio
+import html
 import json
 import os
 import re
@@ -7,11 +8,25 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
+from typing import Any
 from urllib.error import URLError
 from urllib.parse import parse_qs, quote, quote_plus, unquote_plus, urlparse
 from urllib.request import Request, urlopen
 import webbrowser
 import xml.etree.ElementTree as ET
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import HTMLResponse
+    import uvicorn
+except Exception:
+    FastAPI = None
+    HTTPException = Exception
+    HTMLResponse = None
+    uvicorn = None
+try:
+    import webview
+except Exception:
+    webview = None
 try:
     import edge_tts
 except Exception:
@@ -2146,9 +2161,9 @@ class ArxivOpticsUI:
         return icon
 
 def main():
-    root = tk.Tk()
-    ArxivOpticsUI(root)
-    root.mainloop()
+    from paper_summarizer_web import run_paper_summarizer_web_app
+
+    run_paper_summarizer_web_app()
 
 
 if __name__ == "__main__":
